@@ -15,36 +15,21 @@ st.set_page_config(
 )
 
 st.title("💵 Philippine Money Detector")
-st.markdown(
-    "Upload a photo of Philippine banknotes and the model will detect "
-    "and label each denomination."
-)
+st.markdown("Upload a photo of Philippine banknotes and click **Detect** to identify each denomination.")
 
 # ─────────────────────────────────────────────
-# Load model (cached so it only loads once)
+# Load model (cached — only loads once)
 # ─────────────────────────────────────────────
-MODEL_PATH = "best.pt"   # put your trained best.pt next to app.py
+MODEL_PATH = "best.pt"
 
 @st.cache_resource
 def load_model(path: str):
     if not os.path.exists(path):
-        st.error(
-            f"Model file **{path}** not found. "
-            "Please place your trained `best.pt` in the same folder as `app.py`."
-        )
+        st.error(f"Model file **{path}** not found. Place your trained `best.pt` next to `app.py`.")
         st.stop()
     return YOLO(path)
 
 model = load_model(MODEL_PATH)
-
-# ─────────────────────────────────────────────
-# Sidebar settings
-# ─────────────────────────────────────────────
-st.sidebar.header("⚙️ Settings")
-confidence = st.sidebar.slider(
-    "Confidence threshold", min_value=0.10, max_value=1.00, value=0.75, step=0.05
-)
-imgsz = st.sidebar.selectbox("Inference image size (px)", [320, 416, 512, 640], index=2)
 
 # ─────────────────────────────────────────────
 # Upload
@@ -55,75 +40,64 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # Pre-process exactly like the notebook
     image = Image.open(uploaded_file)
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGB")
 
-    col1, col2 = st.columns(2)
+    st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    with col1:
-        st.subheader("📷 Original")
-        st.image(image, use_container_width=True)
+    # ── Predict button ──────────────────────────────────────────
+    if st.button("🔍 Detect", use_container_width=True, type="primary"):
+        with st.spinner("Detecting banknotes…"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                img_path = os.path.join(tmpdir, "input.jpg")
+                image.save(img_path, quality=95)
 
-    # Run inference
-    with st.spinner("Detecting banknotes…"):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            img_path = os.path.join(tmpdir, "input.jpg")
-            image.save(img_path, quality=95)
+                results = model.predict(
+                    source=img_path,
+                    imgsz=320,       # fast inference
+                    conf=0.75,
+                    save=True,
+                    project=tmpdir,
+                    name="pred",
+                )
 
-            results = model.predict(
-                source=img_path,
-                imgsz=imgsz,
-                conf=confidence,
-                save=True,
-                project=tmpdir,
-                name="pred",
-            )
+                saved = (
+                    glob.glob(os.path.join(tmpdir, "pred", "*.jpg"))
+                    + glob.glob(os.path.join(tmpdir, "pred", "*.png"))
+                )
 
-            # Grab saved annotated image
-            saved = (
-                glob.glob(os.path.join(tmpdir, "pred", "*.jpg"))
-                + glob.glob(os.path.join(tmpdir, "pred", "*.png"))
-            )
-
-            with col2:
-                st.subheader("🔍 Detections")
+                # ── Annotated image ─────────────────────────────
+                st.subheader("🔍 Detection Result")
                 if saved:
                     annotated = Image.open(saved[0])
                     st.image(annotated, use_container_width=True)
                 else:
-                    st.info("No annotated image saved — check model output.")
+                    st.info("No annotated image saved.")
 
-    # ── Detection summary ──────────────────────────────────────
-    st.subheader("📊 Detection Summary")
-    result = results[0]
+                # ── Summary ─────────────────────────────────────
+                result = results[0]
 
-    if result.boxes and len(result.boxes) > 0:
-        boxes = result.boxes
-        names = model.names          # class id → label
+                if result.boxes and len(result.boxes) > 0:
+                    st.subheader("📊 Detection Summary")
+                    names = model.names
+                    counts: dict[str, int] = {}
+                    rows = []
 
-        counts: dict[str, int] = {}
-        rows = []
-        for box in boxes:
-            cls_id = int(box.cls[0])
-            label = names[cls_id]
-            conf_val = float(box.conf[0])
-            counts[label] = counts.get(label, 0) + 1
-            rows.append({"Label": label, "Confidence": f"{conf_val:.0%}"})
+                    for box in result.boxes:
+                        cls_id = int(box.cls[0])
+                        label = names[cls_id]
+                        conf_val = float(box.conf[0])
+                        counts[label] = counts.get(label, 0) + 1
+                        rows.append({"Label": label, "Confidence": f"{conf_val:.0%}"})
 
-        # Table of every detected box
-        st.dataframe(rows, use_container_width=True)
+                    st.dataframe(rows, use_container_width=True)
 
-        # Count per denomination
-        st.markdown("**Count per denomination:**")
-        for label, cnt in sorted(counts.items()):
-            st.write(f"- **{label}**: {cnt}")
-    else:
-        st.info(
-            "No banknotes detected at the current confidence threshold. "
-            "Try lowering the threshold in the sidebar."
-        )
+                    st.markdown("**Count per denomination:**")
+                    for label, cnt in sorted(counts.items()):
+                        st.write(f"- **{label}**: {cnt}")
+                else:
+                    st.warning("No banknotes detected. Try a clearer photo with better lighting.")
 
 else:
     st.info("👆 Upload an image to get started.")
